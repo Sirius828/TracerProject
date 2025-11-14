@@ -1,0 +1,152 @@
+import numpy as np
+import logging
+from PyQt5.QtWidgets import QMdiSubWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMenu, QAction, QDialog, QComboBox, QDialogButtonBox, QFormLayout
+from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QFont
+import pyqtgraph as pg
+
+class CSVChannelChartWindow(QMdiSubWindow):
+    """CSV数据图表窗口，显示从CSV导入的通道数据"""
+    def __init__(self, channel_name, csv_data, sample_rate, voltage_scale=1.0, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"CSV通道 - {channel_name}")
+        self.channel_name = channel_name
+        self.csv_data = csv_data  # 通道数据Series
+        self.sample_rate = sample_rate
+        self.voltage_scale = voltage_scale
+        self.csv_id = getattr(csv_data, 'name', None)  # 获取CSV ID（如果可用）        # 电压单位设置
+        self.voltage_unit = "mV"  # 默认单位为毫伏
+        self.voltage_scale = 1000.0  # 默认转换系数：V -> mV
+        
+        # 转换数据
+        self.time_data = np.arange(len(csv_data)) / self.sample_rate if isinstance(sample_rate, (int, float)) else csv_data.index.values  # 如果提供了时间序列，则使用它
+        self.voltage_data = csv_data.values * self.voltage_scale  # 转换电压单位
+        
+        # 设置UI组件
+        self.setup_ui()
+    
+    def setup_ui(self):
+        """设置UI组件"""
+        main_widget = QWidget()
+        layout = QVBoxLayout(main_widget)
+          # 顶部区域：显示通道信息
+        top_widget = QWidget()
+        top_layout = QHBoxLayout(top_widget)
+        
+        channel_label = QLabel(f"通道: {self.channel_name}")
+        channel_label.setFont(QFont("Arial", 14))
+        top_layout.addWidget(channel_label)
+        
+        # 显示最大、最小和平均值
+        if len(self.voltage_data) > 0:
+            max_val = np.max(self.voltage_data)
+            min_val = np.min(self.voltage_data)
+            avg_val = np.mean(self.voltage_data)
+            stats_label = QLabel(f"最大值: {max_val:.3f}{self.voltage_unit} | 最小值: {min_val:.3f}{self.voltage_unit} | 平均值: {avg_val:.3f}{self.voltage_unit}")
+            stats_label.setFont(QFont("Arial", 12))
+            top_layout.addWidget(stats_label)
+        
+        top_layout.addStretch(1)
+        layout.addWidget(top_widget)
+        
+        # 底部区域：电压-时间曲线图
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setLabel('left', 'Voltage', self.voltage_unit)
+        self.plot_widget.setLabel('bottom', 'Time', 's')
+        self.plot_widget.setTitle(f"{self.channel_name} 电压曲线")
+        self.plot_widget.showGrid(x=True, y=True)
+        self.plot_widget.setBackground('w')  # 白色背景
+        
+        # 创建曲线项
+        pen = pg.mkPen(color='b', width=2)
+        self.curve = self.plot_widget.plot(self.time_data, self.voltage_data, pen=pen)
+        
+        # 禁用鼠标悬停在边缘时图表移动的功能
+        view_box = self.plot_widget.getViewBox()
+        view_box.setMouseEnabled(x=True, y=True)  # 允许鼠标拖动
+        view_box.setMouseMode(pg.ViewBox.RectMode)  # 设置为矩形选择模式
+        view_box.autoRange()  # 自动调整范围以适应数据
+        
+        # 禁用鼠标悬停在边缘导致视图移动的功能
+        self.plot_widget.setMouseEnabled(x=False, y=False)  # 这个方法重载了ViewBox的同名方法
+        
+        # 添加交互功能（仅十字光标，不包括边缘移动）
+        self.proxy = pg.SignalProxy(self.plot_widget.scene().sigMouseMoved, 
+                                   rateLimit=60, slot=self.mouse_moved)
+        self.cursor_label = pg.TextItem(text="", color='k', anchor=(0, 0))
+        self.plot_widget.addItem(self.cursor_label)
+        
+        layout.addWidget(self.plot_widget)
+        self.setWidget(main_widget)
+        self.resize(800, 500)
+
+    def mouse_moved(self, evt):
+        """处理鼠标移动，显示坐标"""
+        pos = evt[0]
+        if self.plot_widget.sceneBoundingRect().contains(pos):
+            mouse_point = self.plot_widget.getPlotItem().vb.mapSceneToView(pos)
+            x = mouse_point.x()
+            y = mouse_point.y()
+              # 找到最近的采样点
+            if isinstance(self.sample_rate, (int, float)):
+                # 使用采样率计算索引
+                index = int(x * self.sample_rate)
+                if 0 <= index < len(self.voltage_data):
+                    y_val = self.voltage_data[index]
+                    time_val = self.time_data[index]
+                    self.cursor_label.setText(f"时间: {time_val:.3f}s, 电压: {y_val:.3f}{self.voltage_unit}")
+                    self.cursor_label.setPos(x, y)
+                    self.cursor_label.show()
+                else:
+                    self.cursor_label.hide()
+            else:
+                # 时间数据是从第一列读取的情况
+                # 找到最接近的时间点
+                closest_idx = (np.abs(self.time_data - x)).argmin()                if 0 <= closest_idx < len(self.voltage_data):
+                    y_val = self.voltage_data[closest_idx]
+                    time_val = self.time_data[closest_idx]
+                    self.cursor_label.setText(f"时间: {time_val:.3f}s, 电压: {y_val:.3f}{self.voltage_unit}")
+                    self.cursor_label.setPos(x, y)
+                    self.cursor_label.show()
+                else:
+                    self.cursor_label.hide()
+
+    def set_voltage_unit(self, unit):
+        """设置电压单位并重新缩放数据"""
+        # 单位转换映射
+        unit_scales = {
+            "V": 1.0,
+            "mV": 1000.0,
+            "uV": 1000000.0
+        }
+        
+        if unit in unit_scales:
+            # 计算转换系数
+            old_scale = self.voltage_scale
+            new_scale = unit_scales[unit]
+            conversion_factor = new_scale / old_scale
+            
+            # 更新单位和比例
+            self.voltage_unit = unit
+            self.voltage_scale = new_scale
+            
+            # 转换现有数据
+            self.voltage_data = self.voltage_data * conversion_factor
+            
+            # 更新界面显示
+            self.plot_widget.setLabel('left', f'Voltage ({self.voltage_unit})')
+            self.curve.setData(self.time_data, self.voltage_data)
+            
+            # 更新统计信息标签
+            if len(self.voltage_data) > 0:
+                max_val = np.max(self.voltage_data)
+                min_val = np.min(self.voltage_data)
+                avg_val = np.mean(self.voltage_data)
+                
+                # 找到统计标签并更新
+                for child in self.findChildren(QLabel):
+                    if "最大值:" in child.text():
+                        child.setText(f"最大值: {max_val:.3f}{self.voltage_unit} | 最小值: {min_val:.3f}{self.voltage_unit} | 平均值: {avg_val:.3f}{self.voltage_unit}")
+                        break
+            
+            logging.info(f"CSV通道 {self.channel_name} 电压单位已更新为 {self.voltage_unit}")

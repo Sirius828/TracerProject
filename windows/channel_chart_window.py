@@ -33,6 +33,8 @@ class ChannelChartWindow(QMdiSubWindow):
         self.reading_thread = None
         self.reading = False
         self.thread_error = False  # 新增：标记线程是否遇到错误
+        self.plot_target_rate = 500.0  # 目标绘图点频率 (点/秒)
+        self.plot_decimation = 1  # 采样数据下采样因子
         
         # 记录起始时间用于时间戳计算
         self.start_time = None
@@ -54,6 +56,14 @@ class ChannelChartWindow(QMdiSubWindow):
         
         # 启动数据读取线程
         self.start_reading_thread()
+
+    def update_plot_decimation(self):
+        """根据主窗口采样率更新绘图下采样参数"""
+        sample_rate = getattr(self.main_win, "sample_rate", 1000.0)
+        if sample_rate <= 0:
+            sample_rate = 1000.0
+        factor = int(sample_rate / self.plot_target_rate) if sample_rate > self.plot_target_rate else 1
+        self.plot_decimation = max(1, factor)
     
     def setup_ui(self):
         """设置UI组件"""
@@ -151,6 +161,7 @@ class ChannelChartWindow(QMdiSubWindow):
         # 仅当有任务对象时启动线程（允许在暂停状态下打开窗口）
         if self.ai_task is not None:
             self.reading = True
+            self.update_plot_decimation()
             # 如果是首次启动或线程出错后重启，重置时间
             if self.start_time is None:
                 self.start_time = time.time()
@@ -198,6 +209,11 @@ class ChannelChartWindow(QMdiSubWindow):
             
             logging.info(f"找到通道 {self.channel_name} 的索引: {channel_index}")
             
+            decimation_factor = max(1, self.plot_decimation)
+            decimation_count = 0
+            decimation_sum = 0.0
+            latest_voltage = 0.0
+            
             while self.reading:
                 try:
                     # 如果主窗口任务未启动，则等待
@@ -241,13 +257,24 @@ class ChannelChartWindow(QMdiSubWindow):
                     
                     # 获取通道电压
                     voltage = data[channel_index][0] if isinstance(data[channel_index], (list, tuple, np.ndarray)) else data[channel_index]
+                    latest_voltage = voltage
                     
-                    # 计算当前时间，考虑时间偏移量
-                    current_time = time.time() - self.start_time + self.time_offset
-                    self.last_timestamp = current_time  # 记录最后的时间戳
+                    decimation_count += 1
+                    decimation_sum += voltage
                     
-                    # 将数据放入队列
-                    self.data_queue.put((current_time, voltage))
+                    if self.plot_decimation != decimation_factor:
+                        decimation_factor = max(1, self.plot_decimation)
+                        decimation_count = 0
+                        decimation_sum = 0.0
+                        continue
+                    
+                    if decimation_count >= decimation_factor:
+                        avg_voltage = decimation_sum / decimation_count
+                        current_time = time.time() - self.start_time + self.time_offset
+                        self.last_timestamp = current_time  # 记录最后的时间戳
+                        self.data_queue.put((current_time, avg_voltage, latest_voltage))
+                        decimation_count = 0
+                        decimation_sum = 0.0
                     
                 except Exception as e:
                     error_count += 1
@@ -280,12 +307,17 @@ class ChannelChartWindow(QMdiSubWindow):
         while not self.data_queue.empty() and data_count < max_process:
             data_count += 1
             data_processed = True
-            elapsed, voltage = self.data_queue.get()
+            item = self.data_queue.get()
+            if len(item) == 3:
+                elapsed, voltage, raw_voltage = item
+            else:
+                elapsed, voltage = item
+                raw_voltage = voltage
             
             # 更新当前电压值显示 - 只在有数据时更新文本
             if data_count == 1:  # 只更新最新值
-                self.last_voltage_value = voltage  # 保存原始电压值（伏特）
-                scaled_voltage = voltage * self.voltage_scale
+                self.last_voltage_value = raw_voltage  # 保存原始电压值（伏特）
+                scaled_voltage = raw_voltage * self.voltage_scale
                 self.voltage_value.setText(f"{scaled_voltage:.3f} {self.voltage_unit}")
             
             # 高效添加数据到缓冲区，存储转换后的电压值

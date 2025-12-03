@@ -118,6 +118,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         self.setWindowIcon(QIcon("app_icon.png"))  # 设置应用图标
         self.ai_task = None
         self.ai_task_started = False
+        self.sample_rate = 1000.0  # 默认采样率，可通过工具栏调整
         
         # 工程数据管理
         self.project_name = "工程1"
@@ -126,7 +127,8 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             "channels": [],
             "charts": [],
             "algorithms": [],
-            "csv_files": []  # 添加CSV文件数据存储
+            "csv_files": [],  # 添加CSV文件数据存储
+            "sample_rate": self.sample_rate
         }
         self.project_file_path = None
         self.project_modified = False
@@ -268,6 +270,18 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         # 创建统一的智能按钮
         self.addSmartActions()
         
+        # 添加采样率设置控件
+        self.toolbar.addSeparator()
+        sample_rate_label = QLabel("采样率(Hz): ")
+        self.toolbar.addWidget(sample_rate_label)
+
+        self.sample_rate_spin = QSpinBox()
+        self.sample_rate_spin.setRange(1, 1000000)
+        self.sample_rate_spin.setSingleStep(100)
+        self.sample_rate_spin.setValue(int(self.sample_rate))
+        self.sample_rate_spin.valueChanged.connect(self.on_sample_rate_change)
+        self.toolbar.addWidget(self.sample_rate_spin)
+
         # 添加帮助按钮
         help_action = QAction(QIcon("icon/help.png"), "帮助", self) # 相对路径地址
         help_action.triggered.connect(self.show_about)
@@ -298,6 +312,21 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         expression_chart_act = QAction(QIcon("icon/code.png"), "表达式图表", self)
         expression_chart_act.triggered.connect(self.smartAddExpressionChart)
         self.toolbar.addAction(expression_chart_act)
+
+    def on_sample_rate_change(self, value):
+        """处理采样率变更"""
+        self.sample_rate = float(value)
+        self.project_data["sample_rate"] = self.sample_rate
+        self.statusBar().showMessage(f"采样率已设置为 {int(self.sample_rate)} Hz", 3000)
+        if self.ai_task_started:
+            self.restart_acquisition_task()
+
+    def sync_sample_rate_control(self):
+        """在程序修改采样率时保持工具栏控件同步"""
+        if hasattr(self, "sample_rate_spin"):
+            self.sample_rate_spin.blockSignals(True)
+            self.sample_rate_spin.setValue(int(self.sample_rate))
+            self.sample_rate_spin.blockSignals(False)
 
     def smartAddChannel(self):
         """智能添加通道/数据源"""
@@ -692,7 +721,9 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
                 "name": name,
                 "channels": [],
                 "charts": [],
-                "algorithms": []
+                "algorithms": [],
+                "csv_files": [],
+                "sample_rate": self.sample_rate
             }
             self.project_file_path = None
             self.project_modified = False
@@ -790,6 +821,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         self.project_data["algorithms"] = algorithms
         self.project_data["quadrant_detectors"] = quadrant_detectors
         self.project_data["expression_charts"] = expression_charts
+        self.project_data["sample_rate"] = self.sample_rate
         # 注意：CSV文件数据已在导入时添加到project_data中
 
     # 打开工程
@@ -848,6 +880,9 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             self.project_file_path = file_path
             self.project_modified = False
             self.added_channels = set(self.project_data.get("channels", []))
+            self.sample_rate = float(self.project_data.get("sample_rate", self.sample_rate))
+            self.project_data["sample_rate"] = self.sample_rate
+            self.sync_sample_rate_control()
             
             # 更新界面
             self.project_tree.clear()
@@ -1029,7 +1064,9 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             "name": self.project_name,
             "channels": [],
             "charts": [],
-            "algorithms": []
+            "algorithms": [],
+            "csv_files": [],
+            "sample_rate": self.sample_rate
         }
         self.project_file_path = None
         self.project_modified = False
@@ -1323,7 +1360,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
                     
                     # 配置采样率、采样模式等
                     self.ai_task.timing.cfg_samp_clk_timing(
-                        rate=1000.0,
+                        rate=self.sample_rate,
                         sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
                         samps_per_chan=10
                     )
@@ -1481,7 +1518,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
                 
                 # 配置任务
                 self.ai_task.timing.cfg_samp_clk_timing(
-                    rate=1000.0,
+                    rate=self.sample_rate,
                     sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
                     samps_per_chan=10
                 )
@@ -2021,7 +2058,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             
             # 配置并启动任务
             self.ai_task.timing.cfg_samp_clk_timing(
-                rate=1000.0,
+                rate=self.sample_rate,
                 sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
                 samps_per_chan=10
             )
@@ -2142,7 +2179,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             
             # 配置并启动任务
             self.ai_task.timing.cfg_samp_clk_timing(
-                rate=1000.0,
+                rate=self.sample_rate,
                 sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
                 samps_per_chan=10
             )

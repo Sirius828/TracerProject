@@ -35,6 +35,7 @@ class ChannelChartWindow(QMdiSubWindow):
         self.thread_error = False  # 新增：标记线程是否遇到错误
         self.plot_target_rate = 500.0  # 目标绘图点频率 (点/秒)
         self.plot_decimation = 1  # 采样数据下采样因子
+        self.samples_per_read = 1  # 每次读取的样本数
         
         # 记录起始时间用于时间戳计算
         self.start_time = None
@@ -64,6 +65,7 @@ class ChannelChartWindow(QMdiSubWindow):
             sample_rate = 1000.0
         factor = int(sample_rate / self.plot_target_rate) if sample_rate > self.plot_target_rate else 1
         self.plot_decimation = max(1, factor)
+        self.samples_per_read = self.plot_decimation  # 每次读取的样本数等于下采样因子
     
     def setup_ui(self):
         """设置UI组件"""
@@ -209,10 +211,8 @@ class ChannelChartWindow(QMdiSubWindow):
             
             logging.info(f"找到通道 {self.channel_name} 的索引: {channel_index}")
             
-            decimation_factor = max(1, self.plot_decimation)
-            decimation_count = 0
-            decimation_sum = 0.0
-            latest_voltage = 0.0
+            sample_rate = getattr(self.main_win, "sample_rate", 1000.0)
+            block_duration = self.samples_per_read / sample_rate  # 每个块的时间长度
             
             while self.reading:
                 try:
@@ -252,29 +252,25 @@ class ChannelChartWindow(QMdiSubWindow):
                         time.sleep(retry_interval)
                         continue
                     
-                    # 读取数据
-                    data = self.ai_task.read(number_of_samples_per_channel=1)
+                    # 读取数据块
+                    data = self.ai_task.read(number_of_samples_per_channel=self.samples_per_read)
                     
-                    # 获取通道电压
-                    voltage = data[channel_index][0] if isinstance(data[channel_index], (list, tuple, np.ndarray)) else data[channel_index]
-                    latest_voltage = voltage
+                    # 获取通道电压数组
+                    if isinstance(data[channel_index], (list, tuple, np.ndarray)):
+                        voltage_array = np.array(data[channel_index])
+                    else:
+                        voltage_array = np.array([data[channel_index]])
                     
-                    decimation_count += 1
-                    decimation_sum += voltage
+                    # 计算平均值和最新值
+                    avg_voltage = np.mean(voltage_array)
+                    latest_voltage = voltage_array[-1]
                     
-                    if self.plot_decimation != decimation_factor:
-                        decimation_factor = max(1, self.plot_decimation)
-                        decimation_count = 0
-                        decimation_sum = 0.0
-                        continue
+                    # 计算当前时间戳（块的开始时间）
+                    current_time = self.last_timestamp + block_duration
+                    self.last_timestamp = current_time  # 更新最后时间戳
                     
-                    if decimation_count >= decimation_factor:
-                        avg_voltage = decimation_sum / decimation_count
-                        current_time = time.time() - self.start_time + self.time_offset
-                        self.last_timestamp = current_time  # 记录最后的时间戳
-                        self.data_queue.put((current_time, avg_voltage, latest_voltage))
-                        decimation_count = 0
-                        decimation_sum = 0.0
+                    # 将数据放入队列
+                    self.data_queue.put((current_time, avg_voltage, latest_voltage))
                     
                 except Exception as e:
                     error_count += 1

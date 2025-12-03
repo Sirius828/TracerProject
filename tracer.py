@@ -1362,7 +1362,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
                     self.ai_task.timing.cfg_samp_clk_timing(
                         rate=self.sample_rate,
                         sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
-                        samps_per_chan=10
+                        samps_per_chan=int(self.sample_rate * 0.1)  # 提供100ms缓冲
                     )
                     
                     # 如果之前在采集，则重新启动
@@ -1520,7 +1520,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
                 self.ai_task.timing.cfg_samp_clk_timing(
                     rate=self.sample_rate,
                     sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
-                    samps_per_chan=10
+                    samps_per_chan=int(self.sample_rate * 0.1)  # 提供100ms缓冲
                 )
                 
                 # 启动任务
@@ -2060,7 +2060,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             self.ai_task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
-                samps_per_chan=10
+                samps_per_chan=int(self.sample_rate * 0.1)  # 提供100ms缓冲
             )
             self.ai_task.start()
               # 重新启动所有图表的读取线程
@@ -2181,7 +2181,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             self.ai_task.timing.cfg_samp_clk_timing(
                 rate=self.sample_rate,
                 sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
-                samps_per_chan=10
+                samps_per_chan=int(self.sample_rate * 0.1)  # 提供100ms缓冲
             )
             self.ai_task.start()
             

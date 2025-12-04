@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QMenuBar, QMenu, QAction, QToolBar, QDockWidget,
     QTreeWidget, QTreeWidgetItem, QMdiArea, QMdiSubWindow, QTextEdit, QVBoxLayout,
     QDialog, QMessageBox, QInputDialog, QListWidgetItem, QDialogButtonBox, QFileDialog,
-    QWidget, QLabel, QHBoxLayout, QCheckBox, QComboBox, QGridLayout, QLineEdit, QFrame, QPushButton, QGroupBox, QSpinBox, QFormLayout
+    QWidget, QLabel, QHBoxLayout, QCheckBox, QComboBox, QGridLayout, QLineEdit, QFrame, QPushButton, QGroupBox, QSpinBox, QFormLayout, QAbstractItemView
 )
 from PyQt5.QtCore import Qt, QTimer, QSize, QPoint
 from PyQt5.QtGui import QIcon, QFont, QDoubleValidator 
@@ -205,6 +205,11 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         self.project_tree.customContextMenuRequested.connect(self.on_tree_right_click)
         # 设置多选模式
         self.project_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self.project_tree.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._renaming_item = None
+        self._rename_original_text = ""
+        self._suppress_item_changed = False
+        self.project_tree.itemChanged.connect(self.on_tree_item_changed)
 
         # 顶层"工程"节点
         self.project_root = QTreeWidgetItem(["工程1"])
@@ -243,6 +248,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         # self.timer.start(100)
         
         self.added_channels = set()
+        self.channel_display_names = {}
         
         # 初始化状态栏
         self.statusBar().showMessage("就绪", 3000)
@@ -478,7 +484,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         # 从选中的项目中提取通道名称
         for item in selected_items:
             if isinstance(item, ProjectItem) and item.item_type == "channel":
-                selected_channels.append(item.text(0))
+                selected_channels.append(getattr(item, 'physical_name', item.text(0)))
         
         # 创建四象限探测器配置对话框
         dlg = QuadrantDetectorDialog(list(self.added_channels), parent=self, preselected_channels=selected_channels)
@@ -728,6 +734,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             self.project_file_path = None
             self.project_modified = False
             self.added_channels = set()
+            self.channel_display_names = {}
             
             # 更新界面
             self.project_tree.clear()
@@ -785,10 +792,13 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         """
         # 收集通道数据
         channels = []
+        channel_display_map = {}
         for i in range(self.channels_item.childCount()):
             channel_item = self.channels_item.child(i)
             if isinstance(channel_item, ProjectItem) and channel_item.item_type == "channel":
-                channels.append(channel_item.text(0))
+                physical_name = getattr(channel_item, 'physical_name', channel_item.text(0))
+                channels.append(physical_name)
+                channel_display_map[physical_name] = channel_item.text(0)
         
         # 收集图表数据
         charts = []
@@ -822,6 +832,9 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         self.project_data["quadrant_detectors"] = quadrant_detectors
         self.project_data["expression_charts"] = expression_charts
         self.project_data["sample_rate"] = self.sample_rate
+        self.project_data["channel_display_names"] = channel_display_map
+        # 同步内存中的显示名称映射
+        self.channel_display_names = channel_display_map.copy()
         # 注意：CSV文件数据已在导入时添加到project_data中
 
     # 打开工程
@@ -882,6 +895,8 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             self.added_channels = set(self.project_data.get("channels", []))
             self.sample_rate = float(self.project_data.get("sample_rate", self.sample_rate))
             self.project_data["sample_rate"] = self.sample_rate
+            channel_display_map = self.project_data.get("channel_display_names", {})
+            self.channel_display_names = channel_display_map.copy()
             self.sync_sample_rate_control()
             
             # 更新界面
@@ -893,7 +908,11 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             self.channels_item = QTreeWidgetItem(["通道"])
             self.project_root.addChild(self.channels_item)
             for channel in self.project_data.get("channels", []):
-                item = ProjectItem(channel, item_type="channel")
+                display_name = channel_display_map.get(channel, channel)
+                item = ProjectItem(display_name, item_type="channel")
+                item.physical_name = channel
+                item.display_name = display_name
+                self.channel_display_names[channel] = display_name
                 self.channels_item.addChild(item)
             
             # 添加图表节点
@@ -1071,6 +1090,7 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         self.project_file_path = None
         self.project_modified = False
         self.added_channels = set()
+        self.channel_display_names = {}
         
         # 清空界面
         self.project_tree.clear()
@@ -1086,10 +1106,11 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         
         # 关闭所有打开的窗口
         self.mdi_area.closeAllSubWindows()
-        
+
         # 使用状态栏替代消息框
         self.statusBar().showMessage("工程已关闭", 5000)
-      # ============= 视图操作 =============
+
+    # ============= 视图操作 =============
     # 显示侧栏
     def show_dock(self):
         if (self.project_dock.isHidden()):
@@ -1374,7 +1395,11 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
                     self.restart_all_charts()
                       # 给通道加到工程树 "通道" 节点(只添加新选择的通道)
                     for ch in selected_chans:
-                        item = ProjectItem(ch, item_type="channel")
+                        display_name = self.channel_display_names.get(ch, ch)
+                        self.channel_display_names[ch] = display_name
+                        item = ProjectItem(display_name, item_type="channel")
+                        item.physical_name = ch
+                        item.display_name = display_name
                         self.channels_item.addChild(item)
                     
                     # 对通道进行排序
@@ -1812,6 +1837,10 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         
         # 根据项目类型添加相应的菜单项
         if item_type in ["channel", "csv_channel"]:
+            if item_type == "channel":
+                rename_action = QAction("重命名", self)
+                rename_action.triggered.connect(lambda _, i=item: self.begin_rename(i))
+                menu.addAction(rename_action)
             properties_action = QAction("属性设置", self)
             properties_action.triggered.connect(lambda: self.show_channel_properties(item))
             menu.addAction(properties_action)
@@ -1822,6 +1851,10 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             menu.addAction(delete_action)
             
         elif item_type in ["expression_chart", "csv_expression"]:
+            if item_type == "expression_chart":
+                rename_action = QAction("重命名", self)
+                rename_action.triggered.connect(lambda _, i=item: self.begin_rename(i))
+                menu.addAction(rename_action)
             properties_action = QAction("属性设置", self)
             properties_action.triggered.connect(lambda: self.show_expression_properties(item))
             menu.addAction(properties_action)
@@ -1832,6 +1865,9 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             menu.addAction(delete_action)
             
         elif item_type == "quadrant_detector":
+            rename_action = QAction("重命名", self)
+            rename_action.triggered.connect(lambda _, i=item: self.begin_rename(i))
+            menu.addAction(rename_action)
             # 四象限探测器也添加删除选项
             delete_action = QAction("删除", self)
             delete_action.triggered.connect(lambda: self.delete_tree_item(item))
@@ -1840,6 +1876,198 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
         # 显示菜单
         if menu.actions():
             menu.exec_(self.project_tree.mapToGlobal(position))
+
+    def begin_rename(self, item):
+        """启动树节点重命名流程"""
+        if not isinstance(item, ProjectItem):
+            return
+        if not (item.flags() & Qt.ItemIsEditable):
+            self.statusBar().showMessage("该项目不支持重命名", 3000)
+            return
+        self._renaming_item = item
+        self._rename_original_text = item.text(0)
+        self.project_tree.setCurrentItem(item)
+        self.project_tree.editItem(item, 0)
+
+    def on_tree_item_changed(self, item, column):
+        """处理树节点文本变更"""
+        if self._suppress_item_changed:
+            return
+        if column != 0 or not isinstance(item, ProjectItem):
+            return
+        if self._renaming_item is None or item is not self._renaming_item:
+            return
+
+        new_name = item.text(0).strip()
+        old_name = self._rename_original_text
+
+        if new_name == old_name:
+            self._finalize_rename()
+            return
+
+        if not new_name:
+            QMessageBox.warning(self, "警告", "名称不能为空。")
+            self._restore_item_text(item, old_name)
+            return
+
+        if new_name != item.text(0):
+            self._suppress_item_changed = True
+            item.setText(0, new_name)
+            self._suppress_item_changed = False
+
+        if item.item_type == "channel":
+            if self._name_exists_in_parent(self.channels_item, item, new_name):
+                QMessageBox.warning(self, "警告", "已存在同名通道，请使用不同的名称。")
+                self._restore_item_text(item, old_name)
+                return
+            self._apply_channel_rename(item, old_name, new_name)
+        elif item.item_type == "expression_chart":
+            if self._name_exists_in_parent(self.charts_item, item, new_name):
+                QMessageBox.warning(self, "警告", "已存在同名表达式图表，请使用不同的名称。")
+                self._restore_item_text(item, old_name)
+                return
+            self._apply_expression_rename(item, old_name, new_name)
+        elif item.item_type == "quadrant_detector":
+            if self._name_exists_in_parent(self.charts_item, item, new_name):
+                QMessageBox.warning(self, "警告", "已存在同名四象限探测器，请使用不同的名称。")
+                self._restore_item_text(item, old_name)
+                return
+            self._apply_quadrant_rename(item, old_name, new_name)
+        else:
+            # 不支持的类型，恢复原名
+            self._restore_item_text(item, old_name)
+
+    def _finalize_rename(self):
+        self._renaming_item = None
+        self._rename_original_text = ""
+
+    def _restore_item_text(self, item, original_text):
+        self._suppress_item_changed = True
+        item.setText(0, original_text)
+        self._suppress_item_changed = False
+        self._finalize_rename()
+
+    def _name_exists_in_parent(self, parent_item, exclude_item, name):
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+            if child is exclude_item:
+                continue
+            if child.text(0) == name:
+                return True
+        return False
+
+    def _apply_channel_rename(self, item, old_name, new_name):
+        physical_name = getattr(item, 'physical_name', old_name)
+        item.display_name = new_name
+        self.channel_display_names[physical_name] = new_name
+        if isinstance(self.project_data, dict):
+            channel_map = self.project_data.setdefault("channel_display_names", {})
+            channel_map[physical_name] = new_name
+        self._update_channel_windows(physical_name, new_name)
+        self._update_quadrant_windows_for_channel(physical_name, new_name)
+        self.project_modified = True
+        self.statusBar().showMessage(f"通道已重命名为 {new_name}", 5000)
+        self._finalize_rename()
+
+    def _apply_expression_rename(self, item, old_name, new_name):
+        if hasattr(item, 'expression_data') and isinstance(item.expression_data, dict):
+            item.expression_data["name"] = new_name
+        for window in self._iter_window_instances((ExpressionChartWindow, CSVExpressionChartWindow)):
+            if getattr(window, 'name', None) == old_name:
+                window.name = new_name
+                window.setWindowTitle(new_name)
+        self.project_modified = True
+        self.statusBar().showMessage(f"表达式图表已重命名为 {new_name}", 5000)
+        self._finalize_rename()
+
+    def _apply_quadrant_rename(self, item, old_name, new_name):
+        if hasattr(item, 'detector_data') and isinstance(item.detector_data, dict):
+            item.detector_data["name"] = new_name
+        for window in self._iter_window_instances((QuadrantDetectorWindow, CSVQuadrantDetectorWindow)):
+            if getattr(window, 'detector_name', None) == old_name:
+                window.detector_name = new_name
+                window.setWindowTitle(f"四象限探测器 - {new_name}")
+                if hasattr(window, 'plot_widget'):
+                    window.plot_widget.setTitle(f"四象限探测器 - {new_name}")
+        self.project_modified = True
+        self.statusBar().showMessage(f"四象限探测器已重命名为 {new_name}", 5000)
+        self._finalize_rename()
+
+    def _update_channel_windows(self, physical_name, new_display_name):
+        for window in self._iter_window_instances(ChannelChartWindow):
+            window_physical = getattr(window, 'physical_channel', None)
+            if window_physical is None:
+                window_physical = getattr(window, 'channel_name', None)
+            if window_physical == physical_name:
+                if hasattr(window, 'update_display_name'):
+                    window.update_display_name(new_display_name)
+                else:
+                    window.channel_name = new_display_name
+                    window.setWindowTitle(f"通道 {new_display_name}")
+                    if hasattr(window, 'plot_widget'):
+                        window.plot_widget.setTitle(f"{new_display_name} 电压曲线")
+
+    def _update_expression_windows_for_channel(self, old_name, new_name):
+        for window in self._iter_window_instances(ExpressionChartWindow):
+            if hasattr(window, 'channel_aliases'):
+                updated = False
+                for alias, channel in list(window.channel_aliases.items()):
+                    if channel == old_name:
+                        window.channel_aliases[alias] = new_name
+                        updated = True
+
+    def _update_quadrant_windows_for_channel(self, physical_name, new_display_name):
+        quadrant_names = ["右上", "左上", "左下", "右下"]
+        for window in self._iter_window_instances((QuadrantDetectorWindow, CSVQuadrantDetectorWindow)):
+            if hasattr(window, 'channels') and hasattr(window, 'voltage_labels'):
+                for idx, ch in enumerate(window.channels):
+                    if ch == physical_name and idx < len(window.voltage_labels):
+                        label = window.voltage_labels[idx]
+                        text_parts = label.text().split(']:', 1)
+                        suffix = text_parts[1] if len(text_parts) > 1 else " 0.000 V"
+                        label.setText(f"电压 {idx+1} ({new_display_name}) [{quadrant_names[idx]}]:{suffix}")
+
+    def _update_expression_aliases_for_channel(self, old_name, new_name):
+        for i in range(self.charts_item.childCount()):
+            chart_item = self.charts_item.child(i)
+            if isinstance(chart_item, ProjectItem) and chart_item.item_type == "expression_chart" and hasattr(chart_item, 'expression_data'):
+                aliases = chart_item.expression_data.get("channel_aliases", {})
+                updated = False
+                for alias, channel in list(aliases.items()):
+                    if channel == old_name:
+                        aliases[alias] = new_name
+                        updated = True
+                if updated:
+                    chart_item.expression_data["channel_aliases"] = aliases
+
+        # 同时同步表达式窗口使用的别名
+        for window in self._iter_window_instances(ExpressionChartWindow):
+            if hasattr(window, 'channel_aliases'):
+                for alias, channel in list(window.channel_aliases.items()):
+                    if channel == old_name:
+                        window.channel_aliases[alias] = new_name
+
+    def _update_quadrant_channels_for_channel(self, old_name, new_name):
+        for i in range(self.charts_item.childCount()):
+            chart_item = self.charts_item.child(i)
+            if isinstance(chart_item, ProjectItem) and chart_item.item_type == "quadrant_detector" and hasattr(chart_item, 'detector_data'):
+                channels = chart_item.detector_data.get("channels", [])
+                new_channels = [new_name if ch == old_name else ch for ch in channels]
+                if new_channels != channels:
+                    chart_item.detector_data["channels"] = new_channels
+
+    def _iter_window_instances(self, classes):
+        if not isinstance(classes, tuple):
+            classes = (classes,)
+        seen = set()
+        for subwindow in self.mdi_area.subWindowList():
+            for candidate in (subwindow, subwindow.widget()):
+                if isinstance(candidate, classes):
+                    obj_id = id(candidate)
+                    if obj_id not in seen:
+                        seen.add(obj_id)
+                        yield candidate
+        
     def open_item_window(self, item, column):
         """处理双击侧栏项目打开窗口事件"""
         # 检查项目类型
@@ -1849,8 +2077,10 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             
             if item_type == "channel":
                 # 打开通道图表窗口
+                physical_name = getattr(item, 'physical_name', item_name)
+                display_name = self.channel_display_names.get(physical_name, item_name)
                 # 允许在采集开始前打开窗口，但不开始读取数据
-                window = ChannelChartWindow(item_name, self.ai_task, self)
+                window = ChannelChartWindow(physical_name, self.ai_task, self, display_name=display_name)
                 self.mdi_area.addSubWindow(window)
                 window.show()
                 
@@ -1989,101 +2219,6 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             # 先关闭相关的打开窗口
             self.close_related_windows(item)
             
-            # 从项目树中移除
-            parent = item.parent()
-            if parent:
-                parent.removeChild(item)
-            
-            # 从对应的数据结构中移除
-            if item.item_type == "channel":
-                self.added_channels.discard(item.text(0))
-                # 如果需要，重新配置采集任务
-                if self.ai_task_started:
-                    self.restart_acquisition_task()
-            
-            # 标记工程已修改
-            self.project_modified = True
-            self.statusBar().showMessage(f"已删除 {item.text(0)}", 3000)
-
-    def close_related_windows(self, item):
-        """关闭与指定项目相关的窗口"""
-        item_name = item.text(0)
-        item_type = item.item_type
-        
-        windows_to_close = []
-        for window in self.mdi_area.subWindowList():
-            widget = window.widget()
-            should_close = False
-            
-            if item_type == "channel":
-                # 关闭对应通道的图表窗口
-                if isinstance(widget, (ChannelChartWindow, CSVChannelChartWindow)):
-                    if hasattr(widget, 'channel_name') and widget.channel_name == item_name:
-                        should_close = True
-            elif item_type == "expression_chart":
-                # 关闭对应的表达式图表窗口
-                if isinstance(widget, (ExpressionChartWindow, CSVExpressionChartWindow)):
-                    if hasattr(widget, 'chart_name') and widget.chart_name == item_name:
-                        should_close = True
-            elif item_type == "quadrant_detector":
-                # 关闭对应的四象限探测器窗口
-                if isinstance(widget, (QuadrantDetectorWindow, CSVQuadrantDetectorWindow)):
-                    if hasattr(widget, 'detector_name') and widget.detector_name == item_name:
-                        should_close = True
-            
-            if should_close:
-                windows_to_close.append(window)
-        
-        # 关闭窗口
-        for window in windows_to_close:
-            window.close()
-
-    def restart_acquisition_task(self):
-        """重新启动采集任务以反映通道变化"""
-        if not self.ai_task_started or len(self.added_channels) == 0:
-            return
-            
-        try:
-            # 停止当前任务
-            if self.ai_task:
-                self.ai_task.stop()
-                self.ai_task.close()
-            
-            # 创建新任务
-            self.ai_task = artdaq.Task("myAiTask")
-            
-            # 添加剩余的通道
-            for ch in self.added_channels:
-                self.ai_task.ai_channels.add_ai_voltage_chan(ch)
-            
-            # 配置并启动任务
-            self.ai_task.timing.cfg_samp_clk_timing(
-                rate=self.sample_rate,
-                sample_mode=artdaq.constants.AcquisitionType.CONTINUOUS,
-                samps_per_chan=int(self.sample_rate * 0.1)  # 提供100ms缓冲
-            )
-            self.ai_task.start()
-              # 重新启动所有图表的读取线程
-            self.restart_all_charts(keep_data=True)
-        
-        except Exception as e:
-            logging.error(f"重启采集任务时出错: {str(e)}")
-            QMessageBox.critical(self, "错误", f"重启采集任务时出错: {str(e)}")
-
-    def delete_tree_item(self, item):
-        """删除项目树中的项目"""
-        if not isinstance(item, ProjectItem):
-            return
-            
-        reply = QMessageBox.question(
-            self, '确认删除', f'确定要删除 "{item.text(0)}" 吗？',
-            QMessageBox.Yes | QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
-            # 先关闭相关的打开窗口
-            self.close_related_windows(item)
-            
             # 从项目树中移除项目
             parent = item.parent()
             if parent:
@@ -2091,11 +2226,12 @@ class MainWindow(QMainWindow): # 继承QMainWindow类，是程序的主窗口
             
             # 如果是通道，从已添加通道集合中移除并重启采集任务
             if item.item_type == "channel":
-                channel_name = item.text(0)
-                if channel_name in self.added_channels:
-                    self.added_channels.remove(channel_name)
+                physical_name = getattr(item, 'physical_name', item.text(0))
+                if physical_name in self.added_channels:
+                    self.added_channels.remove(physical_name)
                     # 重启采集任务以反映通道变化
                     self.restart_acquisition_task()
+                self.channel_display_names.pop(physical_name, None)
             
             # 标记工程已修改
             self.project_modified = True

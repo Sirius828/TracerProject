@@ -12,10 +12,13 @@ class ChannelChartWindow(QMdiSubWindow):
     """
     通道电压图表窗口，显示实时电压-时间曲线和当前电压值
     """
-    def __init__(self, channel_name, ai_task, main_win, parent=None):
+    def __init__(self, channel_name, ai_task, main_win, parent=None, display_name=None):
         super().__init__(parent)
-        self.setWindowTitle(f"通道 {channel_name}")
-        self.channel_name = channel_name
+        self.physical_channel = channel_name
+        self.display_name = display_name or channel_name
+        # channel_name 属性继续指向显示名称，保持现有代码兼容
+        self.channel_name = self.display_name
+        self.setWindowTitle(f"通道 {self.display_name}")
         self.ai_task = ai_task
         
         # 电压单位设置
@@ -90,7 +93,7 @@ class ChannelChartWindow(QMdiSubWindow):
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setLabel('left', 'Voltage', self.voltage_unit)
         self.plot_widget.setLabel('bottom', 'Time', 's')
-        self.plot_widget.setTitle(f"{self.channel_name} 电压曲线")
+        self.plot_widget.setTitle(f"{self.display_name} 电压曲线")
         self.plot_widget.showGrid(x=True, y=True)
         self.plot_widget.setBackground('w')  # 白色背景
         
@@ -138,6 +141,14 @@ class ChannelChartWindow(QMdiSubWindow):
                 self.voltage_value.setText(f"0.000 {self.voltage_unit}")
             
             logging.info(f"通道 {self.channel_name} 电压单位已更新为 {self.voltage_unit}")
+
+    def update_display_name(self, new_display_name):
+        """更新窗口中显示的通道名称"""
+        self.display_name = new_display_name
+        self.channel_name = new_display_name
+        self.setWindowTitle(f"通道 {new_display_name}")
+        if hasattr(self, 'plot_widget'):
+            self.plot_widget.setTitle(f"{new_display_name} 电压曲线")
     
     def check_reading_thread(self):
         """检查读取线程状态并尝试恢复"""
@@ -147,7 +158,7 @@ class ChannelChartWindow(QMdiSubWindow):
                 self.thread_error or 
                 not self.reading_thread or 
                 not self.reading_thread.is_alive()):
-                logging.info(f"尝试重新启动通道 {self.channel_name} 的读取线程")
+                logging.info(f"尝试重新启动通道 {self.display_name} 的读取线程")
                 # 更新任务对象引用（防止使用旧的无效任务）
                 self.ai_task = self.main_win.ai_task
                 self.thread_error = False
@@ -193,13 +204,13 @@ class ChannelChartWindow(QMdiSubWindow):
                 # 寻找当前通道的索引
                 found = False
                 for i, ch_name in enumerate(available_channels):
-                    if ch_name == self.channel_name:
+                    if ch_name == self.physical_channel:
                         channel_index = i
                         found = True
                         break
                 
                 if not found:
-                    logging.error(f"无法找到通道 {self.channel_name} 的索引")
+                    logging.error(f"无法找到通道 {self.display_name} ({self.physical_channel}) 的索引")
                     self.reading = False
                     self.thread_error = True
                     return
@@ -209,7 +220,7 @@ class ChannelChartWindow(QMdiSubWindow):
                 self.thread_error = True
                 return
             
-            logging.info(f"找到通道 {self.channel_name} 的索引: {channel_index}")
+            logging.info(f"找到通道 {self.display_name} ({self.physical_channel}) 的索引: {channel_index}")
             
             sample_rate = getattr(self.main_win, "sample_rate", 1000.0)
             block_duration = self.samples_per_read / sample_rate  # 每个块的时间长度
